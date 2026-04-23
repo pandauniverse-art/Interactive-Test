@@ -3,11 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Webcam Interactive Waterfall (teamLab Vibe)</title>
+    <title>Webcam Luminous Trails (teamLab Vibe)</title>
     <style>
         body { 
             margin: 0; overflow: hidden; 
-            background-color: #000000; /* 완전한 어둠 */
+            background-color: #020204; /* 심연의 어둠 */
             font-family: Arial, sans-serif; 
         }
         canvas { display: block; width: 100vw; height: 100vh; }
@@ -36,67 +36,51 @@
 
     <script id="vertexShader" type="x-shader/x-vertex">
         uniform float uTime;
-        uniform vec3 uHandPos; // 웹캠으로 추적한 손가락의 3D 좌표
-        uniform float uSplashPower; // 물보라 세기
 
-        attribute vec3 aRandom; 
+        attribute vec3 aVelocity;
+        attribute float aLife; // 파티클 수명 (0~1)
+        attribute float aSize;
         attribute vec3 aColor;
 
         varying vec3 vColor;
-        varying float vAlpha;
+        varying float vLife;
 
         void main() {
             vec3 pos = position;
             vColor = aColor;
-            vAlpha = 1.0;
+            vLife = aLife;
 
-            // 1. 덩어리감 있는 폭포수 물결 (sin/cos 간섭)
-            float wave = sin(pos.y * 0.005 + uTime * 0.5) * cos(pos.x * 0.002);
-            pos.x += wave * 20.0; 
-
-            // 2. 폭포수 낙하
-            float fallSpeed = 150.0 + (aRandom.x * 300.0);
-            pos.y -= uTime * fallSpeed;
-            pos.y = mod(pos.y + 1500.0, 3000.0) - 1500.0; // 무한 루프
-
-            // 3. 웹캠 손가락(HandPos)에 부딪히는 물보라 (Splash)
-            float distToHand = distance(pos.xy, uHandPos.xy);
-            float effectRadius = 300.0; // 손가락 주변 반응 반경
-
-            if (distToHand < effectRadius && uSplashPower > 0.0) {
-                float force = pow(1.0 - (distToHand / effectRadius), 2.0) * uSplashPower;
-                
-                // 물방울이 위(Y축)와 앞(Z축)으로 솟구침
-                vec3 splashDir = normalize(pos - uHandPos);
-                splashDir.y = abs(splashDir.y) + 1.5; 
-                splashDir.z += 1.0; 
-                
-                pos += splashDir * force * 400.0;
-                
-                // 손가락에 부딪힌 물보라는 핫핑크/하얀색으로 발광
-                vColor = mix(vColor, vec3(1.0, 0.4, 0.8), force);
-                vAlpha = 1.0 + force * 2.0; 
+            if (aLife > 0.0) {
+                // 발산 속도(Velocity)에 따라 사방으로 퍼짐
+                // uTime을 섞어 우주 유영 같은 부드러운 곡선 연출
+                pos.x += aVelocity.x * aLife * 2.0 + sin(uTime * 2.0 + pos.y * 0.01) * 1.5;
+                pos.y += aVelocity.y * aLife * 2.0 + cos(uTime * 2.0 + pos.x * 0.01) * 1.5;
+                pos.z += aVelocity.z * aLife * 2.0;
             }
 
             vec4 mvPosition = modelViewMatrix * vec4(pos, 1.0);
             gl_Position = projectionMatrix * mvPosition;
-            gl_PointSize = aRandom.z * (1000.0 / -mvPosition.z);
+            
+            // 수명이 0인 파티클은 그리지 않음, 남아있으면 크기 변화 부여
+            gl_PointSize = (aLife > 0.0) ? (aSize * aLife * (800.0 / -mvPosition.z)) : 0.0;
         }
     </script>
 
     <script id="fragmentShader" type="x-shader/x-fragment">
         varying vec3 vColor;
-        varying float vAlpha;
+        varying float vLife;
 
         void main() {
+            if (vLife <= 0.0) discard;
+
             vec2 uv = gl_PointCoord.xy - vec2(0.5);
-            uv.x *= 7.0; // 세로로 긴 빗줄기 모양
             float dist = length(uv);
-            
-            if (dist > 0.5) discard; 
+            if (dist > 0.5) discard;
             
             float glow = pow(1.0 - (dist * 2.0), 1.5);
-            gl_FragColor = vec4(vColor, glow * vAlpha * 0.8);
+            
+            // 수명에 따라 서서히 투명해짐
+            gl_FragColor = vec4(vColor, glow * vLife);
         }
     </script>
 
@@ -110,66 +94,45 @@
         const clock = new THREE.Clock();
         let scene, camera, renderer;
         let particleMaterial, particleSystem;
-        
         let raycaster = new THREE.Raycaster();
-        let mouse = new THREE.Vector2(); // 정규화된 손가락 화면 좌표 (-1 ~ 1)
+        let mouse = new THREE.Vector2(); 
         
-        let handPos3D = new THREE.Vector3(0, -5000, 0); // 쉐이더로 넘길 손가락 3D 좌표
-        let targetHandPos3D = new THREE.Vector3(0, -5000, 0);
-        let splashPower = 0.0;
-        let isHandDetected = false;
+        // --- 입자 풀(Pool) 시스템 (최적화) ---
+        const MAX_PARTICLES = 100000;
+        let currentParticleIndex = 0;
+        let positions, velocities, lifes, sizes, colors;
 
-        // --- 1. Three.js 우주 폭포 셋업 ---
+        // --- 1. Three.js 환경 셋업 ---
         function initThreeJS() {
             scene = new THREE.Scene();
-            scene.fog = new THREE.FogExp2(0x000000, 0.00035);
-
             camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 1, 4000);
-            camera.position.z = 1000;
+            camera.position.z = 800;
 
             renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('canvas'), antialias: false, powerPreference: "high-performance" });
-            renderer.setPixelRatio(1.0); // 갤럭시북S 최적화
+            renderer.setPixelRatio(1.0); // 성능 최적화
             renderer.setSize(window.innerWidth, window.innerHeight);
-            renderer.setClearColor(0x000000, 1.0); 
+            renderer.setClearColor(0x020204, 1.0); 
 
-            // 25만 개 파티클 (최적화 밀도)
-            const particleCount = 250000;
             const geometry = new THREE.BufferGeometry();
-            
-            const positions = new Float32Array(particleCount * 3);
-            const randoms = new Float32Array(particleCount * 3);
-            const colors = new Float32Array(particleCount * 3);
+            positions = new Float32Array(MAX_PARTICLES * 3);
+            velocities = new Float32Array(MAX_PARTICLES * 3);
+            lifes = new Float32Array(MAX_PARTICLES); // 수명 0.0이면 화면에 안 보임
+            sizes = new Float32Array(MAX_PARTICLES);
+            colors = new Float32Array(MAX_PARTICLES * 3);
 
-            const colorPalette = [
-                new THREE.Color(0x0088ff), // 시안 블루
-                new THREE.Color(0x1133ff), // 딥 블루
-                new THREE.Color(0x3300ff), // 다크 퍼플
-                new THREE.Color(0xffffff)  // 코어 화이트
-            ];
-
-            for (let i = 0; i < particleCount; i++) {
-                positions[i * 3] = (Math.random() - 0.5) * 3500; 
-                positions[i * 3 + 1] = (Math.random() - 0.5) * 3000; 
-                positions[i * 3 + 2] = (Math.random() - 0.5) * 1000; 
-
-                randoms[i * 3] = Math.random(); 
-                randoms[i * 3 + 1] = Math.random(); 
-                randoms[i * 3 + 2] = 3.0 + Math.random() * 12.0; 
-
-                const c = colorPalette[Math.floor(Math.random() * colorPalette.length)];
-                colors[i * 3] = c.r; colors[i * 3 + 1] = c.g; colors[i * 3 + 2] = c.b;
+            for (let i = 0; i < MAX_PARTICLES; i++) {
+                positions[i * 3] = 0; positions[i * 3 + 1] = 0; positions[i * 3 + 2] = -9999;
+                lifes[i] = 0.0;
             }
 
             geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-            geometry.setAttribute('aRandom', new THREE.BufferAttribute(randoms, 3));
+            geometry.setAttribute('aVelocity', new THREE.BufferAttribute(velocities, 3));
+            geometry.setAttribute('aLife', new THREE.BufferAttribute(lifes, 1));
+            geometry.setAttribute('aSize', new THREE.BufferAttribute(sizes, 1));
             geometry.setAttribute('aColor', new THREE.BufferAttribute(colors, 3));
 
             particleMaterial = new THREE.ShaderMaterial({
-                uniforms: {
-                    uTime: { value: 0.0 },
-                    uHandPos: { value: handPos3D },
-                    uSplashPower: { value: 0.0 }
-                },
+                uniforms: { uTime: { value: 0.0 } },
                 vertexShader: document.getElementById('vertexShader').textContent,
                 fragmentShader: document.getElementById('fragmentShader').textContent,
                 transparent: true, blending: THREE.AdditiveBlending, depthWrite: false
@@ -185,7 +148,54 @@
             });
         }
 
-        // --- 2. MediaPipe 웹캠 AI 셋업 (손가락 추적) ---
+        // --- 2. 핵심: 손가락 위치에서 파티클 뿜어내기 (Emit) ---
+        function emitParticles(x, y) {
+            // 화면 좌표(-1 ~ 1)를 3D 공간 좌표로 투영
+            raycaster.setFromCamera({ x: x, y: y }, camera);
+            let plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
+            let intersectPoint = new THREE.Vector3();
+            raycaster.ray.intersectPlane(plane, intersectPoint);
+            
+            if (intersectPoint) {
+                const emitCount = 100; // 한 프레임당 뿜어낼 입자 수
+                const colorPalette = [
+                    new THREE.Color(0x00e5ff), // 시안
+                    new THREE.Color(0x2244ff), // 딥 블루
+                    new THREE.Color(0xff00aa), // 핫핑크/마젠타
+                    new THREE.Color(0xffffff)  // 코어 라이트
+                ];
+
+                for (let i = 0; i < emitCount; i++) {
+                    let idx = currentParticleIndex;
+                    currentParticleIndex = (currentParticleIndex + 1) % MAX_PARTICLES;
+
+                    // 생성 위치 (손가락 끝 약간 주변)
+                    positions[idx * 3] = intersectPoint.x + (Math.random() - 0.5) * 15;
+                    positions[idx * 3 + 1] = intersectPoint.y + (Math.random() - 0.5) * 15;
+                    positions[idx * 3 + 2] = intersectPoint.z + (Math.random() - 0.5) * 15;
+
+                    // 폭발적으로 퍼져나가는 벡터 (사방으로)
+                    velocities[idx * 3] = (Math.random() - 0.5) * 10.0;
+                    velocities[idx * 3 + 1] = (Math.random() - 0.5) * 10.0;
+                    velocities[idx * 3 + 2] = (Math.random() - 0.5) * 10.0;
+
+                    lifes[idx] = 1.0; // 수명 부여 (화면 등장)
+                    sizes[idx] = 6.0 + Math.random() * 20.0;
+
+                    const c = colorPalette[Math.floor(Math.random() * colorPalette.length)];
+                    colors[idx * 3] = c.r; colors[idx * 3 + 1] = c.g; colors[idx * 3 + 2] = c.b;
+                }
+                
+                // GPU에 데이터 갱신 알림
+                particleSystem.geometry.attributes.position.needsUpdate = true;
+                particleSystem.geometry.attributes.aVelocity.needsUpdate = true;
+                particleSystem.geometry.attributes.aLife.needsUpdate = true;
+                particleSystem.geometry.attributes.aSize.needsUpdate = true;
+                particleSystem.geometry.attributes.aColor.needsUpdate = true;
+            }
+        }
+
+        // --- 3. MediaPipe 웹캠 손가락 추적 ---
         function initMediaPipe() {
             const videoElement = document.getElementById('video');
             const loading = document.getElementById('loading');
@@ -193,13 +203,12 @@
             const hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`});
             
             hands.setOptions({
-                maxNumHands: 1, // 성능을 위해 하나의 손만 정확히 추적
-                modelComplexity: 0, // 갤럭시북S(ARM) 최적화를 위해 가장 가벼운 모델 사용
+                maxNumHands: 1, 
+                modelComplexity: 0, // ARM 최적화용 가장 가벼운 모델
                 minDetectionConfidence: 0.5,
                 minTrackingConfidence: 0.5
             });
 
-            // 매 프레임마다 손가락 위치 분석
             hands.onResults((results) => {
                 if (loading.style.opacity !== '0') {
                     loading.style.opacity = '0';
@@ -207,25 +216,15 @@
                 }
 
                 if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
-                    isHandDetected = true;
-                    // landmarks[8] = 검지 손가락 끝
+                    // 검지손가락 끝부분 (index 8)
                     const indexFinger = results.multiHandLandmarks[0][8];
                     
-                    // 웹캠 거울 모드(좌우반전) 적용하여 화면 좌표계(-1 ~ 1)로 변환
-                    mouse.x = (1.0 - indexFinger.x) * 2 - 1;
-                    mouse.y = -(indexFinger.y) * 2 + 1;
+                    // 웹캠 좌우 반전 처리 후 -1 ~ 1 화면 좌표계 변환
+                    const screenX = (1.0 - indexFinger.x) * 2 - 1;
+                    const screenY = -(indexFinger.y) * 2 + 1;
 
-                    // 2D 마우스 좌표를 3D 공간 좌표로 변환
-                    raycaster.setFromCamera(mouse, camera);
-                    let plane = new THREE.Plane(new THREE.Vector3(0, 0, 1), 0);
-                    let intersectPoint = new THREE.Vector3();
-                    raycaster.ray.intersectPlane(plane, intersectPoint);
-                    
-                    if (intersectPoint) {
-                        targetHandPos3D.copy(intersectPoint);
-                    }
-                } else {
-                    isHandDetected = false; // 손이 안 보이면 물보라 꺼짐
+                    // 파티클 뿜어내기 실행!
+                    emitParticles(screenX, screenY);
                 }
             });
 
@@ -236,29 +235,23 @@
             cameraApp.start();
         }
 
-        // --- 3. 메인 렌더링 루프 ---
+        // --- 4. 메인 렌더링 루프 ---
         function animate() {
             requestAnimationFrame(animate);
-            const elapsedTime = clock.getElapsedTime();
-
-            // 손이 인식되면 물보라 발생, 사라지면 서서히 가라앉음
-            if (isHandDetected) {
-                splashPower += (1.0 - splashPower) * 0.2; // 부드럽게 켜짐
-                handPos3D.lerp(targetHandPos3D, 0.3); // 손가락 위치를 부드럽게 따라감
-            } else {
-                splashPower -= 0.05; 
-                if (splashPower < 0) splashPower = 0.0;
+            
+            // 파티클 수명 감소 (수명이 다하면 화면에서 사라짐)
+            for (let i = 0; i < MAX_PARTICLES; i++) {
+                if (lifes[i] > 0.0) {
+                    lifes[i] -= 0.015; // 감소 속도
+                    if (lifes[i] <= 0.0) lifes[i] = 0.0;
+                }
             }
+            particleSystem.geometry.attributes.aLife.needsUpdate = true;
 
-            // 쉐이더 업데이트
-            particleMaterial.uniforms.uTime.value = elapsedTime;
-            particleMaterial.uniforms.uHandPos.value.copy(handPos3D);
-            particleMaterial.uniforms.uSplashPower.value = splashPower;
-
+            particleMaterial.uniforms.uTime.value = clock.getElapsedTime();
             renderer.render(scene, camera);
         }
 
-        // 실행
         initThreeJS();
         initMediaPipe();
         animate();
