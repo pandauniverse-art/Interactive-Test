@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Webcam Fluid Trails</title>
+    <title>Webcam Fluid Trails with Turbulence</title>
     <style>
         body { 
             margin: 0; overflow: hidden; 
@@ -40,8 +40,8 @@
             vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
             gl_Position = projectionMatrix * mvPosition;
             
-            // [수정 1] 입자 크기를 기존 절반 수준으로 대폭 축소 (3.0 * ...)
-            gl_PointSize = (aLife > 0.0) ? (3.0 * aLife * (800.0 / -mvPosition.z)) : 0.0;
+            // 입자 크기 최소화 (빛 번짐 방지)
+            gl_PointSize = (aLife > 0.0) ? (2.5 * aLife * (800.0 / -mvPosition.z)) : 0.0;
         }
     </script>
 
@@ -56,8 +56,8 @@
             float dist = length(uv);
             if (dist > 0.5) discard;
             
-            // [수정 2] 부드러운 글로우. Additive Blending에서 너무 타지 않게 알파값(투명도) 조정
-            float glow = pow(1.0 - (dist * 2.0), 1.2);
+            float glow = pow(1.0 - (dist * 2.0), 1.5);
+            // 겹쳐도 하얗게 타지 않도록 투명도 조절
             gl_FragColor = vec4(vColor, glow * vLife * 0.6); 
         }
     </script>
@@ -69,13 +69,12 @@
         let raycaster = new THREE.Raycaster();
         let fadeScene, orthoCamera;
 
-        const MAX_PARTICLES = 150000; // 입자가 오래 남으므로 풀 사이즈 증가
+        const MAX_PARTICLES = 150000; 
         let currentParticleIndex = 0;
         let positions, velocities, lifes, colors;
 
         let isMouseDown = false;
         
-        // 이동 방향 계산용 변수
         let lastEmitPoint = new THREE.Vector3(0,0,0);
         let pointerVelocity = new THREE.Vector3(0,0,0);
 
@@ -89,13 +88,13 @@
             renderer.setSize(window.innerWidth, window.innerHeight);
             renderer.autoClearColor = false; 
 
-            // 잔상(Trail) 효과용 화면 지우개
+            // 잔상(Trail) 지우개 설정
             fadeScene = new THREE.Scene();
             orthoCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
             const fadeMaterial = new THREE.MeshBasicMaterial({
                 color: 0x000000,
                 transparent: true,
-                opacity: 0.12, // 꼬리 길이
+                opacity: 0.1, // 꼬리 잔상 길이 조절 (낮을수록 길어짐)
                 depthWrite: false
             });
             const fadePlane = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), fadeMaterial);
@@ -134,7 +133,6 @@
             document.addEventListener('mouseup', () => { isMouseDown = false; });
         }
 
-        // 마우스를 처음 누를 때 이전 위치 초기화
         function resetPointerVelocity(pixelX, pixelY) {
              let ndcX = (pixelX / window.innerWidth) * 2 - 1;
              let ndcY = -(pixelY / window.innerHeight) * 2 + 1;
@@ -154,7 +152,7 @@
             raycaster.ray.intersectPlane(plane, intersectPoint);
             
             if (intersectPoint) {
-                // [핵심] 이동 방향 및 속도 계산
+                // 이동 속도 및 방향 계산 (꼬리 이펙트용)
                 pointerVelocity.copy(intersectPoint).sub(lastEmitPoint);
                 lastEmitPoint.copy(intersectPoint);
                 
@@ -165,13 +163,12 @@
         function emitParticles(point, dirVelocity) {
             const emitCount = 150; 
             const colorPalette = [
-                new THREE.Color(0x00e5ff), // 시안
-                new THREE.Color(0x2244ff), // 딥 블루
-                new THREE.Color(0xff00aa), // 마젠타
-                new THREE.Color(0xffffff)  // 코어
+                new THREE.Color(0x00e5ff), 
+                new THREE.Color(0x2244ff), 
+                new THREE.Color(0xff00aa), 
+                new THREE.Color(0xffffff)  
             ];
 
-            // 이동 속도가 거의 없으면 제자리 방사형, 있으면 꼬리형
             let speed = dirVelocity.length();
             let isMoving = speed > 1.0;
 
@@ -179,26 +176,23 @@
                 let idx = currentParticleIndex;
                 currentParticleIndex = (currentParticleIndex + 1) % MAX_PARTICLES;
 
-                // 생성 위치 (살짝 흩뿌림)
-                positions[idx * 3] = point.x + (Math.random() - 0.5) * 15;
-                positions[idx * 3 + 1] = point.y + (Math.random() - 0.5) * 15;
+                positions[idx * 3] = point.x + (Math.random() - 0.5) * 8;
+                positions[idx * 3 + 1] = point.y + (Math.random() - 0.5) * 8;
                 positions[idx * 3 + 2] = point.z;
 
-                // [수정 3] 이동 반대 방향(꼬리)으로 흩어지는 유체 저항 물리 연산
                 if (isMoving) {
-                    // 이동 방향의 반대(꼬리)로 밀려남 + 양옆으로 흩어지는 노이즈
-                    let baseDragX = -dirVelocity.x * 0.8;
-                    let baseDragY = -dirVelocity.y * 0.8;
+                    // [핵심 변경] 이동 시 꼬리 방향으로만 흐르게 세팅 + 방사 범위 40%로 대폭 축소
+                    let baseDragX = -dirVelocity.x * 0.4;
+                    let baseDragY = -dirVelocity.y * 0.4;
                     
-                    // 범위 2배 확장
-                    velocities[idx * 3] = baseDragX + (Math.random() - 0.5) * 20.0;
-                    velocities[idx * 3 + 1] = baseDragY + (Math.random() - 0.5) * 20.0;
-                    velocities[idx * 3 + 2] = (Math.random() - 0.5) * 10.0;
+                    velocities[idx * 3] = baseDragX + (Math.random() - 0.5) * 8.0; 
+                    velocities[idx * 3 + 1] = baseDragY + (Math.random() - 0.5) * 8.0; 
+                    velocities[idx * 3 + 2] = (Math.random() - 0.5) * 4.0;
                 } else {
-                    // 제자리에 있을 땐 넓게 방사
-                    velocities[idx * 3] = (Math.random() - 0.5) * 15.0;
-                    velocities[idx * 3 + 1] = (Math.random() - 0.5) * 15.0;
-                    velocities[idx * 3 + 2] = (Math.random() - 0.5) * 15.0;
+                    // 제자리에 있을 땐 좁은 방사형 (범위 축소)
+                    velocities[idx * 3] = (Math.random() - 0.5) * 6.0;
+                    velocities[idx * 3 + 1] = (Math.random() - 0.5) * 6.0;
+                    velocities[idx * 3 + 2] = (Math.random() - 0.5) * 6.0;
                 }
 
                 lifes[idx] = 1.0; 
@@ -259,18 +253,29 @@
             requestAnimationFrame(animate);
             
             let posUpdated = false;
+            let time = clock.getElapsedTime();
 
             for (let i = 0; i < MAX_PARTICLES; i++) {
                 if (lifes[i] > 0.0) {
-                    // [수정 4] 수명 200% 증가 (0.003으로 감소 속도를 늦춤)
-                    lifes[i] -= 0.003; 
+                    lifes[i] -= 0.004; // 수명 (천천히 사라짐)
                     if (lifes[i] <= 0.0) { lifes[i] = 0.0; continue; }
 
+                    // [핵심 추가] 터뷸런스(Turbulence) 효과 적용
+                    // 파티클의 위치에 따라 미세하게 꼬이는 힘을 더해줌 (연기 같은 일렁임)
+                    let px = positions[i * 3];
+                    let py = positions[i * 3 + 1];
+                    let pz = positions[i * 3 + 2];
+                    
+                    velocities[i * 3] += Math.sin(py * 0.02 + time * 2.0) * 0.15;
+                    velocities[i * 3 + 1] += Math.cos(px * 0.02 + time * 2.0) * 0.15;
+                    velocities[i * 3 + 2] += Math.sin(px * 0.02 + time * 2.0) * 0.15;
+
+                    // 속도를 위치에 더함
                     positions[i * 3] += velocities[i * 3];
                     positions[i * 3 + 1] += velocities[i * 3 + 1];
                     positions[i * 3 + 2] += velocities[i * 3 + 2];
 
-                    // 공기 저항으로 속도 감속 (느릿하고 우아하게 퍼짐)
+                    // 공기 저항으로 속도 감속 (부드러운 움직임 유지)
                     velocities[i * 3] *= 0.94;
                     velocities[i * 3 + 1] *= 0.94;
                     velocities[i * 3 + 2] *= 0.94;
