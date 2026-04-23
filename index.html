@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Webcam Particle Emitter with Trails</title>
+    <title>Webcam Fluid Trails</title>
     <style>
         body { 
             margin: 0; overflow: hidden; 
@@ -40,8 +40,8 @@
             vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
             gl_Position = projectionMatrix * mvPosition;
             
-            // 입자 크기 1/3로 축소
-            gl_PointSize = (aLife > 0.0) ? (7.0 * aLife * (800.0 / -mvPosition.z)) : 0.0;
+            // [수정 1] 입자 크기를 기존 절반 수준으로 대폭 축소 (3.0 * ...)
+            gl_PointSize = (aLife > 0.0) ? (3.0 * aLife * (800.0 / -mvPosition.z)) : 0.0;
         }
     </script>
 
@@ -56,8 +56,9 @@
             float dist = length(uv);
             if (dist > 0.5) discard;
             
-            float glow = pow(1.0 - (dist * 2.0), 1.5);
-            gl_FragColor = vec4(vColor, glow * vLife);
+            // [수정 2] 부드러운 글로우. Additive Blending에서 너무 타지 않게 알파값(투명도) 조정
+            float glow = pow(1.0 - (dist * 2.0), 1.2);
+            gl_FragColor = vec4(vColor, glow * vLife * 0.6); 
         }
     </script>
 
@@ -66,15 +67,17 @@
         let scene, camera, renderer;
         let particleMaterial, particleSystem;
         let raycaster = new THREE.Raycaster();
-        
-        // 트레일(잔상) 처리를 위한 추가 씬과 카메라
         let fadeScene, orthoCamera;
 
-        const MAX_PARTICLES = 100000; 
+        const MAX_PARTICLES = 150000; // 입자가 오래 남으므로 풀 사이즈 증가
         let currentParticleIndex = 0;
         let positions, velocities, lifes, colors;
 
         let isMouseDown = false;
+        
+        // 이동 방향 계산용 변수
+        let lastEmitPoint = new THREE.Vector3(0,0,0);
+        let pointerVelocity = new THREE.Vector3(0,0,0);
 
         function initThree() {
             scene = new THREE.Scene();
@@ -84,27 +87,29 @@
             renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('canvas'), antialias: false, preserveDrawingBuffer: true });
             renderer.setPixelRatio(1.0);
             renderer.setSize(window.innerWidth, window.innerHeight);
-            // 핵심: 매 프레임마다 화면을 지우지 않음
             renderer.autoClearColor = false; 
 
-            // --- 잔상(Trail) 렌더링 세팅 ---
+            // 잔상(Trail) 효과용 화면 지우개
             fadeScene = new THREE.Scene();
             orthoCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
             const fadeMaterial = new THREE.MeshBasicMaterial({
                 color: 0x000000,
                 transparent: true,
-                opacity: 0.15, // ★ 이 값을 조절해서 꼬리의 길이를 바꿀 수 있습니다. (작을수록 긺, 0.05~0.2 추천)
+                opacity: 0.12, // 꼬리 길이
                 depthWrite: false
             });
             const fadePlane = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), fadeMaterial);
             fadeScene.add(fadePlane);
-            // -----------------------------
 
             const geometry = new THREE.BufferGeometry();
             positions = new Float32Array(MAX_PARTICLES * 3);
             velocities = new Float32Array(MAX_PARTICLES * 3);
             lifes = new Float32Array(MAX_PARTICLES);
             colors = new Float32Array(MAX_PARTICLES * 3);
+
+            for (let i = 0; i < MAX_PARTICLES; i++) {
+                lifes[i] = 0.0;
+            }
 
             geometry.setAttribute('position', new THREE.BufferAttribute(positions, 3));
             geometry.setAttribute('aLife', new THREE.BufferAttribute(lifes, 1));
@@ -120,9 +125,23 @@
             scene.add(particleSystem);
 
             window.addEventListener('resize', onResize);
-            document.addEventListener('mousedown', (e) => { isMouseDown = true; emitFromScreen(e.clientX, e.clientY); });
+            document.addEventListener('mousedown', (e) => { 
+                isMouseDown = true; 
+                resetPointerVelocity(e.clientX, e.clientY);
+                emitFromScreen(e.clientX, e.clientY); 
+            });
             document.addEventListener('mousemove', (e) => { if(isMouseDown) emitFromScreen(e.clientX, e.clientY); });
             document.addEventListener('mouseup', () => { isMouseDown = false; });
+        }
+
+        // 마우스를 처음 누를 때 이전 위치 초기화
+        function resetPointerVelocity(pixelX, pixelY) {
+             let ndcX = (pixelX / window.innerWidth) * 2 - 1;
+             let ndcY = -(pixelY / window.innerHeight) * 2 + 1;
+             raycaster.setFromCamera({ x: ndcX, y: ndcY }, camera);
+             let intersectPoint = new THREE.Vector3();
+             raycaster.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0,0,1),0), intersectPoint);
+             if(intersectPoint) lastEmitPoint.copy(intersectPoint);
         }
 
         function emitFromScreen(pixelX, pixelY) {
@@ -135,32 +154,52 @@
             raycaster.ray.intersectPlane(plane, intersectPoint);
             
             if (intersectPoint) {
-                emitParticles(intersectPoint);
+                // [핵심] 이동 방향 및 속도 계산
+                pointerVelocity.copy(intersectPoint).sub(lastEmitPoint);
+                lastEmitPoint.copy(intersectPoint);
+                
+                emitParticles(intersectPoint, pointerVelocity);
             }
         }
 
-        function emitParticles(point) {
-            // 개수 2배 증가
-            const emitCount = 120; 
+        function emitParticles(point, dirVelocity) {
+            const emitCount = 150; 
             const colorPalette = [
-                new THREE.Color(0x00e5ff), 
-                new THREE.Color(0x2244ff), 
-                new THREE.Color(0xff00aa), 
-                new THREE.Color(0xffffff)  
+                new THREE.Color(0x00e5ff), // 시안
+                new THREE.Color(0x2244ff), // 딥 블루
+                new THREE.Color(0xff00aa), // 마젠타
+                new THREE.Color(0xffffff)  // 코어
             ];
+
+            // 이동 속도가 거의 없으면 제자리 방사형, 있으면 꼬리형
+            let speed = dirVelocity.length();
+            let isMoving = speed > 1.0;
 
             for (let i = 0; i < emitCount; i++) {
                 let idx = currentParticleIndex;
                 currentParticleIndex = (currentParticleIndex + 1) % MAX_PARTICLES;
 
-                positions[idx * 3] = point.x + (Math.random() - 0.5) * 10;
-                positions[idx * 3 + 1] = point.y + (Math.random() - 0.5) * 10;
+                // 생성 위치 (살짝 흩뿌림)
+                positions[idx * 3] = point.x + (Math.random() - 0.5) * 15;
+                positions[idx * 3 + 1] = point.y + (Math.random() - 0.5) * 15;
                 positions[idx * 3 + 2] = point.z;
 
-                // 속도 40%로 감소
-                velocities[idx * 3] = (Math.random() - 0.5) * 6.0;
-                velocities[idx * 3 + 1] = (Math.random() - 0.5) * 6.0;
-                velocities[idx * 3 + 2] = (Math.random() - 0.5) * 6.0;
+                // [수정 3] 이동 반대 방향(꼬리)으로 흩어지는 유체 저항 물리 연산
+                if (isMoving) {
+                    // 이동 방향의 반대(꼬리)로 밀려남 + 양옆으로 흩어지는 노이즈
+                    let baseDragX = -dirVelocity.x * 0.8;
+                    let baseDragY = -dirVelocity.y * 0.8;
+                    
+                    // 범위 2배 확장
+                    velocities[idx * 3] = baseDragX + (Math.random() - 0.5) * 20.0;
+                    velocities[idx * 3 + 1] = baseDragY + (Math.random() - 0.5) * 20.0;
+                    velocities[idx * 3 + 2] = (Math.random() - 0.5) * 10.0;
+                } else {
+                    // 제자리에 있을 땐 넓게 방사
+                    velocities[idx * 3] = (Math.random() - 0.5) * 15.0;
+                    velocities[idx * 3 + 1] = (Math.random() - 0.5) * 15.0;
+                    velocities[idx * 3 + 2] = (Math.random() - 0.5) * 15.0;
+                }
 
                 lifes[idx] = 1.0; 
 
@@ -168,6 +207,8 @@
                 colors[idx * 3] = c.r; colors[idx * 3 + 1] = c.g; colors[idx * 3 + 2] = c.b;
             }
         }
+
+        let isWebcamMode = false;
 
         function initMediaPipe() {
             const videoElement = document.getElementById('video');
@@ -190,7 +231,14 @@
                     let pixelX = (1.0 - indexFinger.x) * window.innerWidth;
                     let pixelY = indexFinger.y * window.innerHeight;
                     
+                    if(!isWebcamMode) {
+                        isWebcamMode = true;
+                        resetPointerVelocity(pixelX, pixelY);
+                    }
+
                     emitFromScreen(pixelX, pixelY);
+                } else {
+                    isWebcamMode = false;
                 }
             });
 
@@ -214,17 +262,18 @@
 
             for (let i = 0; i < MAX_PARTICLES; i++) {
                 if (lifes[i] > 0.0) {
-                    // 수명 3배 이상 길게
-                    lifes[i] -= 0.006; 
+                    // [수정 4] 수명 200% 증가 (0.003으로 감소 속도를 늦춤)
+                    lifes[i] -= 0.003; 
                     if (lifes[i] <= 0.0) { lifes[i] = 0.0; continue; }
 
                     positions[i * 3] += velocities[i * 3];
                     positions[i * 3 + 1] += velocities[i * 3 + 1];
                     positions[i * 3 + 2] += velocities[i * 3 + 2];
 
-                    velocities[i * 3] *= 0.95;
-                    velocities[i * 3 + 1] *= 0.95;
-                    velocities[i * 3 + 2] *= 0.95;
+                    // 공기 저항으로 속도 감속 (느릿하고 우아하게 퍼짐)
+                    velocities[i * 3] *= 0.94;
+                    velocities[i * 3 + 1] *= 0.94;
+                    velocities[i * 3 + 2] *= 0.94;
 
                     posUpdated = true;
                 }
@@ -236,9 +285,7 @@
                 particleSystem.geometry.attributes.aColor.needsUpdate = true;
             }
 
-            // 1. 이전 프레임 위에 반투명 검은색 덧씌우기 (꼬리 효과 생성)
             renderer.render(fadeScene, orthoCamera);
-            // 2. 그 위에 새로운 파티클 그리기
             renderer.render(scene, camera);
         }
 
