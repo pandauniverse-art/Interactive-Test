@@ -1,0 +1,176 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Hand Tracking Particle Art (teamLab Vibe)</title>
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            background-color: #020204; /* 심연의 어둠 */
+            color: white;
+            font-family: 'Helvetica Neue', Arial, sans-serif;
+            touch-action: none;
+        }
+        /* 파티클이 그려질 메인 캔버스 */
+        #canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+        }
+        /* 웹캠 영상은 백그라운드에서 처리만 하고 화면엔 숨김 */
+        #video {
+            display: none;
+        }
+        /* 안내 문구 */
+        #ui-layer {
+            position: absolute;
+            bottom: 5vh; width: 100%; text-align: center;
+            font-size: 14px; letter-spacing: 4px; font-weight: 300;
+            color: rgba(255, 255, 255, 0.5);
+            pointer-events: none; mix-blend-mode: screen;
+        }
+        #loading {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 18px; letter-spacing: 2px;
+            pointer-events: none; transition: opacity 0.5s;
+        }
+    </style>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+</head>
+<body>
+
+    <div id="loading">카메라 AI 로딩 중... (웹캠 권한을 허용해주세요)</div>
+    <div id="ui-layer">MOVE YOUR HANDS TO DRAW LIGHT</div>
+    <video id="video" autoplay playsinline></video>
+    <canvas id="canvas"></canvas>
+
+    <script>
+        const videoElement = document.getElementById('video');
+        const canvasElement = document.getElementById('canvas');
+        const ctx = canvasElement.getContext('2d');
+        const loading = document.getElementById('loading');
+
+        // 캔버스 사이즈 맞추기
+        function resize() {
+            canvasElement.width = window.innerWidth;
+            canvasElement.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        // 1. 파티클(입자) 클래스 설정
+        class Particle {
+            constructor(x, y) {
+                this.x = x;
+                this.y = y;
+                // 사방으로 퍼지는 속도
+                this.vx = (Math.random() - 0.5) * 12;
+                this.vy = (Math.random() - 0.5) * 12;
+                this.life = 1.0; // 수명
+                
+                // 팀랩 Vibe 컬러 팔레트 (시안, 딥퍼플, 마젠타)
+                const colors = ['#00e5ff', '#5500ff', '#ff00aa', '#ffffff'];
+                this.color = colors[Math.floor(Math.random() * colors.length)]; 
+                
+                this.size = Math.random() * 8 + 2;
+            }
+            update() {
+                this.x += this.vx;
+                this.y += this.vy;
+                // 공기 저항 (마찰력)
+                this.vx *= 0.92;
+                this.vy *= 0.92;
+                // 수명 감소 (서서히 사라짐)
+                this.life -= 0.015;
+            }
+            draw(context) {
+                context.globalAlpha = Math.max(0, this.life);
+                context.fillStyle = this.color;
+                
+                // 부드러운 글로우 효과를 위한 둥근 그라데이션
+                const grad = context.createRadialGradient(this.x, this.y, 0, this.x, this.y, this.size);
+                grad.addColorStop(0, this.color);
+                grad.addColorStop(1, 'rgba(0,0,0,0)');
+                context.fillStyle = grad;
+
+                context.beginPath();
+                context.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                context.fill();
+            }
+        }
+
+        let particles = [];
+
+        // 2. 애니메이션 루프 (잔상 효과 포함)
+        function animate() {
+            // 화면을 지우지 않고 반투명 검은색을 덮어 꼬리(잔상)를 만듦
+            ctx.globalCompositeOperation = 'source-over';
+            ctx.globalAlpha = 0.15; // 잔상 길이 조절 (낮을수록 긺)
+            ctx.fillStyle = '#020204';
+            ctx.fillRect(0, 0, canvasElement.width, canvasElement.height);
+
+            // 파티클이 겹치면 밝게 빛나는 Additive Blending 모드
+            ctx.globalCompositeOperation = 'lighter';
+
+            for (let i = particles.length - 1; i >= 0; i--) {
+                particles[i].update();
+                particles[i].draw(ctx);
+                if (particles[i].life <= 0) {
+                    particles.splice(i, 1);
+                }
+            }
+            requestAnimationFrame(animate);
+        }
+        animate();
+
+        // 3. MediaPipe Hands AI 세팅 (손 추적)
+        const hands = new Hands({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+        }});
+
+        hands.setOptions({
+            maxNumHands: 2, // 두 손 모두 인식
+            modelComplexity: 1, // 정확도와 속도 밸런스
+            minDetectionConfidence: 0.6,
+            minTrackingConfidence: 0.6
+        });
+
+        // 웹캠 프레임마다 손 위치를 분석해서 파티클 생성
+        hands.onResults((results) => {
+            if (loading.style.display !== 'none') {
+                loading.style.opacity = '0'; // 로딩 숨기기
+                setTimeout(() => loading.style.display = 'none', 500);
+            }
+
+            if (results.multiHandLandmarks) {
+                for (const landmarks of results.multiHandLandmarks) {
+                    // landmarks[8] = 검지손가락 끝부분
+                    // 노트북 웹캠 거울 모드 보정: 1.0 - x
+                    const x = (1.0 - landmarks[8].x) * canvasElement.width;
+                    const y = landmarks[8].y * canvasElement.height;
+
+                    // 손끝에서 파티클 방출 (개수를 늘리면 더 풍성해짐)
+                    for(let i = 0; i < 15; i++) {
+                        particles.push(new Particle(x, y));
+                    }
+                }
+            }
+        });
+
+        // 4. 웹캠 실행
+        const camera = new Camera(videoElement, {
+            onFrame: async () => {
+                await hands.send({image: videoElement});
+            },
+            width: 640,
+            height: 480
+        });
+        camera.start();
+    </script>
+</body>
+</html>
