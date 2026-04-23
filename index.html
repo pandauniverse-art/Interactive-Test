@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Webcam Fluid Trails with Turbulence</title>
+    <title>Webcam Fluid Trails (Final)</title>
     <style>
         body { 
             margin: 0; overflow: hidden; 
@@ -40,8 +40,8 @@
             vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
             gl_Position = projectionMatrix * mvPosition;
             
-            // 입자 크기 최소화 (빛 번짐 방지)
-            gl_PointSize = (aLife > 0.0) ? (2.5 * aLife * (800.0 / -mvPosition.z)) : 0.0;
+            // [수정 1] 입자 크기 2배 증가 (2.5 -> 5.0)
+            gl_PointSize = (aLife > 0.0) ? (5.0 * aLife * (800.0 / -mvPosition.z)) : 0.0;
         }
     </script>
 
@@ -57,7 +57,7 @@
             if (dist > 0.5) discard;
             
             float glow = pow(1.0 - (dist * 2.0), 1.5);
-            // 겹쳐도 하얗게 타지 않도록 투명도 조절
+            // 겹쳐도 하얗게 타지 않도록 투명도 세팅
             gl_FragColor = vec4(vColor, glow * vLife * 0.6); 
         }
     </script>
@@ -94,7 +94,7 @@
             const fadeMaterial = new THREE.MeshBasicMaterial({
                 color: 0x000000,
                 transparent: true,
-                opacity: 0.1, // 꼬리 잔상 길이 조절 (낮을수록 길어짐)
+                opacity: 0.1, 
                 depthWrite: false
             });
             const fadePlane = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), fadeMaterial);
@@ -152,7 +152,6 @@
             raycaster.ray.intersectPlane(plane, intersectPoint);
             
             if (intersectPoint) {
-                // 이동 속도 및 방향 계산 (꼬리 이펙트용)
                 pointerVelocity.copy(intersectPoint).sub(lastEmitPoint);
                 lastEmitPoint.copy(intersectPoint);
                 
@@ -181,7 +180,6 @@
                 positions[idx * 3 + 2] = point.z;
 
                 if (isMoving) {
-                    // [핵심 변경] 이동 시 꼬리 방향으로만 흐르게 세팅 + 방사 범위 40%로 대폭 축소
                     let baseDragX = -dirVelocity.x * 0.4;
                     let baseDragY = -dirVelocity.y * 0.4;
                     
@@ -189,7 +187,6 @@
                     velocities[idx * 3 + 1] = baseDragY + (Math.random() - 0.5) * 8.0; 
                     velocities[idx * 3 + 2] = (Math.random() - 0.5) * 4.0;
                 } else {
-                    // 제자리에 있을 땐 좁은 방사형 (범위 축소)
                     velocities[idx * 3] = (Math.random() - 0.5) * 6.0;
                     velocities[idx * 3 + 1] = (Math.random() - 0.5) * 6.0;
                     velocities[idx * 3 + 2] = (Math.random() - 0.5) * 6.0;
@@ -257,25 +254,22 @@
 
             for (let i = 0; i < MAX_PARTICLES; i++) {
                 if (lifes[i] > 0.0) {
-                    lifes[i] -= 0.004; // 수명 (천천히 사라짐)
+                    lifes[i] -= 0.004; 
                     if (lifes[i] <= 0.0) { lifes[i] = 0.0; continue; }
 
-                    // [핵심 추가] 터뷸런스(Turbulence) 효과 적용
-                    // 파티클의 위치에 따라 미세하게 꼬이는 힘을 더해줌 (연기 같은 일렁임)
+                    // [수정 2] 터뷸런스 대폭 축소 (15% 수준)
+                    // 진폭을 0.15에서 0.0225로 확 줄여서 연기처럼 살짝만 일렁이게 함
                     let px = positions[i * 3];
                     let py = positions[i * 3 + 1];
-                    let pz = positions[i * 3 + 2];
                     
-                    velocities[i * 3] += Math.sin(py * 0.02 + time * 2.0) * 0.15;
-                    velocities[i * 3 + 1] += Math.cos(px * 0.02 + time * 2.0) * 0.15;
-                    velocities[i * 3 + 2] += Math.sin(px * 0.02 + time * 2.0) * 0.15;
+                    velocities[i * 3] += Math.sin(py * 0.02 + time * 2.0) * 0.0225;
+                    velocities[i * 3 + 1] += Math.cos(px * 0.02 + time * 2.0) * 0.0225;
+                    velocities[i * 3 + 2] += Math.sin(px * 0.02 + time * 2.0) * 0.0225;
 
-                    // 속도를 위치에 더함
                     positions[i * 3] += velocities[i * 3];
                     positions[i * 3 + 1] += velocities[i * 3 + 1];
                     positions[i * 3 + 2] += velocities[i * 3 + 2];
 
-                    // 공기 저항으로 속도 감속 (부드러운 움직임 유지)
                     velocities[i * 3] *= 0.94;
                     velocities[i * 3 + 1] *= 0.94;
                     velocities[i * 3 + 2] *= 0.94;
