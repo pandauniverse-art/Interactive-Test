@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Webcam Particle Emitter</title>
+    <title>Webcam Particle Emitter with Trails</title>
     <style>
         body { 
             margin: 0; overflow: hidden; 
@@ -40,7 +40,7 @@
             vec4 mvPosition = modelViewMatrix * vec4(position, 1.0);
             gl_Position = projectionMatrix * mvPosition;
             
-            // [수정 1: 입자 크기 1/3로 축소] 기존 20.0 -> 7.0 으로 변경
+            // 입자 크기 1/3로 축소
             gl_PointSize = (aLife > 0.0) ? (7.0 * aLife * (800.0 / -mvPosition.z)) : 0.0;
         }
     </script>
@@ -67,7 +67,10 @@
         let particleMaterial, particleSystem;
         let raycaster = new THREE.Raycaster();
         
-        const MAX_PARTICLES = 100000; // 수명이 길어지고 개수가 늘어났으므로 풀(Pool) 넉넉히 확장
+        // 트레일(잔상) 처리를 위한 추가 씬과 카메라
+        let fadeScene, orthoCamera;
+
+        const MAX_PARTICLES = 100000; 
         let currentParticleIndex = 0;
         let positions, velocities, lifes, colors;
 
@@ -78,9 +81,24 @@
             camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 1, 4000);
             camera.position.z = 800;
 
-            renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('canvas'), antialias: false });
+            renderer = new THREE.WebGLRenderer({ canvas: document.getElementById('canvas'), antialias: false, preserveDrawingBuffer: true });
             renderer.setPixelRatio(1.0);
             renderer.setSize(window.innerWidth, window.innerHeight);
+            // 핵심: 매 프레임마다 화면을 지우지 않음
+            renderer.autoClearColor = false; 
+
+            // --- 잔상(Trail) 렌더링 세팅 ---
+            fadeScene = new THREE.Scene();
+            orthoCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1);
+            const fadeMaterial = new THREE.MeshBasicMaterial({
+                color: 0x000000,
+                transparent: true,
+                opacity: 0.15, // ★ 이 값을 조절해서 꼬리의 길이를 바꿀 수 있습니다. (작을수록 긺, 0.05~0.2 추천)
+                depthWrite: false
+            });
+            const fadePlane = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), fadeMaterial);
+            fadeScene.add(fadePlane);
+            // -----------------------------
 
             const geometry = new THREE.BufferGeometry();
             positions = new Float32Array(MAX_PARTICLES * 3);
@@ -122,7 +140,7 @@
         }
 
         function emitParticles(point) {
-            // [수정 2: 개수 2배 증가] 기존 60 -> 120
+            // 개수 2배 증가
             const emitCount = 120; 
             const colorPalette = [
                 new THREE.Color(0x00e5ff), 
@@ -139,7 +157,7 @@
                 positions[idx * 3 + 1] = point.y + (Math.random() - 0.5) * 10;
                 positions[idx * 3 + 2] = point.z;
 
-                // [수정 3: 속도 40%로 감소] 기존 15.0 -> 6.0 으로 줄여서 천천히 퍼지게 함
+                // 속도 40%로 감소
                 velocities[idx * 3] = (Math.random() - 0.5) * 6.0;
                 velocities[idx * 3 + 1] = (Math.random() - 0.5) * 6.0;
                 velocities[idx * 3 + 2] = (Math.random() - 0.5) * 6.0;
@@ -196,7 +214,7 @@
 
             for (let i = 0; i < MAX_PARTICLES; i++) {
                 if (lifes[i] > 0.0) {
-                    // [수정 4: 수명 3배 이상 길게] 기존 감소량 0.02 -> 0.006 으로 줄여 훨씬 오래 보이게 함
+                    // 수명 3배 이상 길게
                     lifes[i] -= 0.006; 
                     if (lifes[i] <= 0.0) { lifes[i] = 0.0; continue; }
 
@@ -218,6 +236,9 @@
                 particleSystem.geometry.attributes.aColor.needsUpdate = true;
             }
 
+            // 1. 이전 프레임 위에 반투명 검은색 덧씌우기 (꼬리 효과 생성)
+            renderer.render(fadeScene, orthoCamera);
+            // 2. 그 위에 새로운 파티클 그리기
             renderer.render(scene, camera);
         }
 
